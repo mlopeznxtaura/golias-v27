@@ -49,7 +49,7 @@ Intelligence is a **τ-controlled state machine**. Input order: **geometry → b
 
 | Value | Behavior |
 |-------|----------|
-| `watsonx` | Watsonx first; CE fallback on timeout/429/5xx |
+| `watsonx` | Watsonx first; CE fallback on timeout/429/5xx; **local-fallback** if CE URLs unset |
 | `local` | Rule-based only (no API calls) — for baked-in checkpoint testing |
 | (fallback URLs) | `IF_FALLBACK_M1/M2/M3` → CE app `/invoke` |
 

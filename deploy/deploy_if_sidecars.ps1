@@ -44,6 +44,7 @@ foreach ($role in @("m1", "m2", "m3")) {
     Write-Host "`n=== CE app $app (min-scale 0) ===" -ForegroundColor Cyan
     ibmcloud ce app get -n $app 2>$null
     if ($LASTEXITCODE -ne 0) {
+        Write-Host "  Creating $app (requires CE create permission)..." -ForegroundColor Yellow
         ibmcloud ce app create -n $app `
             --build-source https://github.com/mlopeznxtaura/golias-v27 `
             --build-dockerfile Dockerfile.if `
@@ -54,6 +55,10 @@ foreach ($role in @("m1", "m2", "m3")) {
             --cpu 0.25 `
             --memory 0.5G `
             --port 8080
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  SKIP $app — use GPU local-fallback until IAM allows CE app create" -ForegroundColor Red
+            continue
+        }
     } else {
         ibmcloud ce app update -n $app `
             --build-source https://github.com/mlopeznxtaura/golias-v27 `
