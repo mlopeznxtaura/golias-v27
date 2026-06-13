@@ -3,3 +3,6 @@ __pycache__/
 .env
 .venv/
 train.jsonl.log
+.watsonx*.local
+*apikey*.json
+**/env.sh
