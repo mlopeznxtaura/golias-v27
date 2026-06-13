@@ -15,7 +15,7 @@ from jsonl_corpus_stream import D_OUT, iter_jsonl_batches
 BATCH_SIZE = int(os.environ.get("GOLIAS_BATCH", "16"))
 NUM_EPOCHS = int(os.environ.get("GOLIAS_EPOCHS", "20"))
 LR = float(os.environ.get("GOLIAS_LR", "5e-5"))
-JSONL_PATH = os.environ.get("GOLIAS_JSONL", str(ROOT / "data" / "goliasv11_corpus.jsonl"))
+JSONL_PATH = os.environ.get("GOLIAS_JSONL", str(ROOT / "data" / "goliasv27_corpus.jsonl"))
 RESUME = os.environ.get("GOLIAS_RESUME", str(ROOT / "goliasv11.pt"))
 OUTPUT = os.environ.get("GOLIAS_OUTPUT", str(ROOT / "goliasv27.pt"))
 CHECKPOINT = str(ROOT / "goliasv27_checkpoint.pt")

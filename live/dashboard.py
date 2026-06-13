@@ -18,7 +18,7 @@ from auth import HEADER, auth_ok  # noqa: E402
 from goliasv7_torch import GoliasV7Torch  # noqa: E402
 from jsonl_corpus_stream import encode_jsonl_record  # noqa: E402
 from ui_page import PAGE  # noqa: E402
-from v27 import compute_tau, project_outputs  # noqa: E402
+from v27 import compute_tau, language_scalar_from_text, project_outputs  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "8080"))
 BIND = os.environ.get("GOLIAS_BIND", "0.0.0.0")
@@ -74,7 +74,7 @@ def run_v27_forward(p: dict) -> dict:
     lang = str(p.get("language", p.get("question", "")))
     tri = p.get("triangulation")
     tri_f = float(tri) if tri is not None else None
-    tau = compute_tau(g, b, float(p.get("language_scalar", p.get("l", 0.4))))
+    tau = compute_tau(g, b, language_scalar_from_text(lang))
 
     model.TAU.data.fill_(tau)
     m1, m2, m3 = _encode_tensors(g, b, lang, tri_f)
@@ -142,7 +142,9 @@ class Handler(BaseHTTPRequestHandler):
                 "device": DEVICE,
                 "ckpt": CKPT.name,
                 "ckpt_exists": CKPT.exists(),
-                "corpus": str(ROOT / "data" / "goliasv11_corpus.jsonl"),
+                "corpus": str(ROOT / "data" / "goliasv27_corpus.jsonl"),
+                "doctrine": str(ROOT / "data" / "architecture_doctrine.jsonl"),
+                "ledger": "public — runtime on IBM Cloud",
                 "log": str(LOG),
             }))
         elif path == "/log":

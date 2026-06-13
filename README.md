@@ -1,49 +1,50 @@
-# Golias v27 — NextAura live application
+# Golias v27 — public ledger
 
-Intelligence as a **τ-controlled state machine**. Inputs in order: **geometry → binary → language**. Outputs: **of₁** next-frame (224-d) and **of₂** explanation; RL language context on mismatch.
+**This repo is the public ledger** — architecture doctrine, self-critique corpus, and scalar-pack schema. It is not the runtime.
 
-Base checkpoint: [goliasv11](https://github.com/mlopeznxtaura/goliasv11) — download `goliasv11.pt` to repo root before running.
+| What | Where |
+|------|--------|
+| **Live app** | IBM Cloud — GPU L40S + Code Engine hybrid |
+| **Public URL** | https://golias-live.2b02drai9gwy.us-east.codeengine.appdomain.cloud |
+| **Checkpoint** | [goliasv11](https://github.com/mlopeznxtaura/goliasv11) (`goliasv11.pt`) |
+| **Private ops** | IBM GPU `/opt/golias-v27`, RAWgolias deploy scripts |
 
-## Quick start (local)
+## Ledger files
 
-```bash
-# 1. Place checkpoint
-curl -L -o goliasv11.pt https://github.com/mlopeznxtaura/goliasv11/raw/main/goliasv11.pt
+| File | Lines | Role |
+|------|-------|------|
+| `data/architecture_doctrine.jsonl` | 40 | HF→JSONL pipeline, encoding-not-decoding, τ, world model |
+| `data/goliasv11_corpus.jsonl` | 105 | Self-critique from v11 checkpoint metrics |
+| `data/goliasv27_corpus.jsonl` | 145 | Merged training corpus (doctrine + critique) |
 
-# 2. GPU dashboard
-pip install -r requirements.txt
-python live/dashboard.py
+Each ledger line is either **doctrine** (`id`, `topic`, `explanation`, `why_valid`) or **scalar pack** (`geometry`, `binary`, `language`, `triangulation`, `next_frame`, `next_token`).
 
-# 3. JSONL corpus replay (105-line self-critique corpus in data/)
-python training/train_from_jsonl.py
-```
+## Architecture (v27)
 
-## API
+Intelligence is a **τ-controlled state machine**. Input order: **geometry → binary → language**. Outputs: **of₁** next-frame (224-d), **of₂** explanation. Training on scalar packs — no raw video decode.
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/forward` | POST | Full v27: τ, of₁, of₂, RL context |
-| `/judge` | POST | `V` human score → `Adapt(θ,V)` signal |
-| `/train/jsonl` | POST | Start corpus replay fine-tune (v11→v27) |
-| `/log` | GET | Training log poll |
+τ ∈ [0,1] from GEO + BIN + LNG controls halt, LR, export eligibility, active query.
 
-POST body:
+## IBM runtime (not this repo)
 
-```json
-{"geometry":0.47,"binary":0.73,"language":"...","triangulation":0.68,"V":0.58}
-```
+On GPU (`goliasv11`, `150.239.211.245`):
 
-## Architecture
+- `goliasv27-dash` → `/opt/golias-v27/live/dashboard.py` :8080
+- CE `golias-live` proxies via private path → GPU
+- Corpus replay: `GOLIAS_JSONL=/opt/golias-v27/data/goliasv27_corpus.jsonl`
 
-- **τ** — triangulation invariant from GEO + BIN + LNG; controls halt, LR, export eligibility
-- **Corpus** — inline `.jsonl` per line (`data/goliasv11_corpus.jsonl`); immediate batch training, no nested HF `.json` buffer
-- **CE deploy** — `Dockerfile.proxy` on Code Engine → `GOLIAS_GPU_URL` private path
+`live/` and `training/` in this repo mirror the IBM deploy for audit; production runs on cloud only.
 
-## IBM hybrid deploy
+## Rebuild merged corpus
 
 ```bash
-docker build -f Dockerfile.gpu -t golias-v27-gpu .
-docker build -f Dockerfile.proxy -t golias-v27-proxy .
+python training/build_corpus.py   # → data/goliasv27_corpus.jsonl
 ```
 
-Set `GOLIAS_INTERNAL_KEY`, `GOLIAS_GPU_URL` on CE; `GOLIAS_CKPT=/app/goliasv11.pt` on GPU.
+## HF → JSONL (offline ingest, run on IBM GPU)
+
+```bash
+python training/hf_to_jsonl.py --dataset nvidia/PhysicalAI-... --max-samples 10000
+```
+
+One-time scalar extraction; training consumes JSONL lines immediately.

@@ -38,8 +38,12 @@ def _expand_base(base: np.ndarray, dim: int) -> np.ndarray:
     return (out / (mx + 1e-8)).astype(np.float32)
 
 
+from normalize_jsonl import normalize_record  # noqa: E402
+
+
 def encode_jsonl_record(rec: dict):
     """Map one JSONL row to model inputs + targets (geometry → binary → language)."""
+    rec = normalize_record(rec)
     g = float(rec["geometry"])
     b = float(rec["binary"])
     lang = str(rec.get("language", ""))

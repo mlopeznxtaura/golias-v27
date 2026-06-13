@@ -13,7 +13,15 @@ import numpy as np
 import torch
 
 OF1_DIM = 224
-BASE_LR = 1e-4
+def language_scalar_from_text(text: str) -> float:
+    """LNG channel strength from text (0–1); avoids dead semantic τ."""
+    t = (text or "").strip()
+    if not t:
+        return 0.075
+    h = hashlib.sha256(t.encode("utf-8")).digest()
+    base = int.from_bytes(h[:4], "big") % 10000 / 10000.0
+    density = min(1.0, len(t) / 512.0)
+    return float(max(0.05, min(1.0, 0.6 * base + 0.4 * density)))
 
 
 def compute_tau(geometry: float, binary: float, language: float) -> float:
