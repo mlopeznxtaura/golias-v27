@@ -2,7 +2,7 @@
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8">
-<title>Golias v27</title>
+<title>Golias Live</title>
 <style>
 :root{color-scheme:dark}
 body{margin:0;font-family:ui-monospace,Menlo,monospace;background:#05070a;color:#d7e0f0}
@@ -24,7 +24,7 @@ button.secondary{background:#1e2937;border:1px solid #334155}
 </style></head>
 <body>
 <header>
-  <h1>GOLIAS v27 — τ STATE MACHINE</h1>
+  <h1>GOLIAS LIVE — v27 τ STATE MACHINE</h1>
   <span class="tag" id="meta">loading...</span>
 </header>
 <div class="wrap">
@@ -32,6 +32,7 @@ button.secondary{background:#1e2937;border:1px solid #334155}
     <h2>Corpus replay log</h2>
     <div class="term"><div id="log">connecting...</div></div>
     <button class="secondary" onclick="startTrain()">Start JSONL corpus train (v11→v27)</button>
+    <button class="secondary" onclick="demoChallenge()">Demo: move the red block left</button>
   </section>
   <section>
     <h2>IF inputs (order: geometry → binary → language)</h2>
@@ -51,7 +52,7 @@ button.secondary{background:#1e2937;border:1px solid #334155}
 <script>
 fetch('/info').then(r=>r.json()).then(d=>{
   document.getElementById('meta').textContent =
-    (d.arch||'v27') + ' | ' + (d.device||'?') + ' | ckpt:' + (d.ckpt||'?');
+    (d.arch||d.mode||'v27') + ' | ' + (d.device||'?') + ' | ckpt:' + (d.ckpt||'?');
 });
 const log=document.getElementById('log'); let logPos=0;
 async function pollLog(){
@@ -61,7 +62,8 @@ async function pollLog(){
     if(d.lines&&d.lines.length){
       if(log.textContent.startsWith('connect')) log.textContent='';
       log.textContent+=d.lines.join('\\n')+'\\n';
-      logPos=d.pos; log.parentElement.scrollTop=log.parentElement.scrollHeight;
+      logPos=d.pos; log.parentElement.scrollHeight;
+      log.parentElement.scrollTop=log.parentElement.scrollHeight;
     }
   }catch(e){}
   setTimeout(pollLog,1500);
@@ -76,6 +78,11 @@ function payload(){
     triangulation: tri===''?null:parseFloat(tri),
     V:parseFloat(document.getElementById('v').value)
   };
+}
+function demoChallenge(){
+  document.getElementById('language').value='move the red block to the left';
+  document.getElementById('g').value='0.52';
+  runForward();
 }
 async function runForward(){
   document.getElementById('answer').textContent='Running...';

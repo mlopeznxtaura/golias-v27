@@ -1,4 +1,4 @@
-"""Code Engine HTTPS front — proxies to GPU v27 backend."""
+"""Code Engine public HTTPS front — proxies to private GPU v27 backend."""
 import json
 import os
 from http.client import HTTPConnection, HTTPSConnection
@@ -15,13 +15,13 @@ GPU_HOST = _p.hostname or "127.0.0.1"
 GPU_PORT = _p.port or (443 if _p.scheme == "https" else 80)
 GPU_SCHEME = _p.scheme or "http"
 
-POST_PATHS = {"/infer", "/ask", "/forward", "/judge", "/train/jsonl"}
+POST_PATHS = frozenset({"/infer", "/ask", "/forward", "/judge", "/train/jsonl"})
 
 
 def _conn():
     if GPU_SCHEME == "https":
-        return HTTPSConnection(GPU_HOST, GPU_PORT, timeout=300)
-    return HTTPConnection(GPU_HOST, GPU_PORT, timeout=300)
+        return HTTPSConnection(GPU_HOST, GPU_PORT, timeout=120)
+    return HTTPConnection(GPU_HOST, GPU_PORT, timeout=120)
 
 
 def _gpu_request(method, path, body=None):
@@ -52,43 +52,73 @@ class Handler(BaseHTTPRequestHandler):
             body = body.encode("utf-8")
         self.wfile.write(body)
 
-    def _proxy(self, method, path):
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
+            self._send(200, "text/html; charset=utf-8", PAGE)
+            return
+        if path == "/health":
+            self._send(200, "application/json", json.dumps({"status": "ok", "role": "ce-proxy-v27"}))
+            return
+        if path == "/info":
+            try:
+                resp = _gpu_request("GET", "/info")
+                gpu = json.loads(resp.read().decode("utf-8", errors="replace"))
+                resp.close()
+            except Exception as ex:
+                gpu = {"error": str(ex)}
+            self._send(200, "application/json", json.dumps({
+                "mode": "secure-hybrid-v27",
+                "arch": gpu.get("arch", "Golias-NextAura-v27"),
+                "gateway": "code-engine-https",
+                "gpu_backend": GPU_URL,
+                "device": gpu.get("device"),
+                "ckpt": gpu.get("ckpt"),
+                "ckpt_exists": gpu.get("ckpt_exists"),
+                "corpus": gpu.get("corpus"),
+                "doctrine": gpu.get("doctrine"),
+                "log_exists": gpu.get("log_exists"),
+            }))
+            return
+        if path == "/log":
+            try:
+                q = self.path.split("?", 1)
+                gpu_path = "/log" + (f"?{q[1]}" if len(q) > 1 else "")
+                resp = _gpu_request("GET", gpu_path)
+                data = resp.read()
+                self.send_response(resp.status)
+                ct = resp.getheader("Content-Type", "application/json")
+                self.send_header("content-type", ct)
+                self.end_headers()
+                self.wfile.write(data)
+                resp.close()
+            except Exception as ex:
+                self._send(502, "application/json", json.dumps({"error": str(ex), "lines": []}))
+            return
+        self._send(404, "text/plain", "not found")
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        if path not in POST_PATHS:
+            self._send(404, "text/plain", "not found")
+            return
+        n = int(self.headers.get("content-length", 0))
+        body = self.rfile.read(n) if n else None
         try:
-            if method == "GET":
-                resp = _gpu_request("GET", path)
-            else:
-                n = int(self.headers.get("content-length", 0))
-                body = self.rfile.read(n) if n else b"{}"
-                resp = _gpu_request("POST", path, body=body)
+            resp = _gpu_request("POST", path, body=body)
             data = resp.read()
             self.send_response(resp.status)
-            self.send_header("content-type", resp.getheader("Content-Type", "application/json"))
+            ct = resp.getheader("Content-Type", "application/json")
+            self.send_header("content-type", ct)
             self.end_headers()
             self.wfile.write(data)
             resp.close()
         except Exception as ex:
             self._send(502, "application/json", json.dumps({"error": str(ex)}))
 
-    def do_GET(self):
-        path = self.path.split("?", 1)[0]
-        if path in ("/", "/index.html"):
-            self._send(200, "text/html; charset=utf-8", PAGE)
-        elif path in ("/health", "/info", "/log"):
-            q = self.path.split("?", 1)
-            self._proxy("GET", path + (f"?{q[1]}" if len(q) > 1 and path == "/log" else ""))
-        else:
-            self._send(404, "text/plain", "not found")
-
-    def do_POST(self):
-        path = self.path.split("?", 1)[0]
-        if path in POST_PATHS:
-            self._proxy("POST", path)
-        else:
-            self._send(404, "text/plain", "not found")
-
 
 def main():
-    print(f"v27 CE proxy :{PORT} -> {GPU_URL}", flush=True)
+    print(f"CE proxy v27 :{PORT} -> {GPU_URL}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 
