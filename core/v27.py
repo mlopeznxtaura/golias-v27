@@ -13,6 +13,9 @@ import numpy as np
 import torch
 
 OF1_DIM = 224
+BASE_LR = 1e-4
+
+
 def language_scalar_from_text(text: str) -> float:
     """LNG channel strength from text (0–1); avoids dead semantic τ."""
     t = (text or "").strip()

@@ -1,0 +1,7 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY sidecars/if_rules.py sidecars/
+COPY sidecars/if_handler.py sidecars/
+ENV PORT=8080
+EXPOSE 8080
+CMD ["python", "/app/sidecars/if_handler.py"]

@@ -1,4 +1,4 @@
-"""Golias v27 UI — geometry → binary → language; of₁/of₂ outputs."""
+"""Golias v27 UI — M1/M2/M3 sliders + geometry → binary → language."""
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8">
@@ -21,6 +21,8 @@ button{background:linear-gradient(135deg,#3f7bff,#7a47ff);border:0;color:#fff;fo
 button.secondary{background:#1e2937;border:1px solid #334155}
 #answer,#out{background:#0a1628;border:1px solid #1e3a5f;border-radius:6px;padding:10px;font-size:11px;min-height:90px;margin-top:8px;white-space:pre-wrap;color:#bae6fd}
 .order{display:grid;grid-template-columns:1fr;gap:8px}
+.sliders{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:10px}
+@media(max-width:700px){.sliders{grid-template-columns:1fr 1fr}}
 </style></head>
 <body>
 <header>
@@ -35,15 +37,22 @@ button.secondary{background:#1e2937;border:1px solid #334155}
     <button class="secondary" onclick="demoChallenge()">Demo: move the red block left</button>
   </section>
   <section>
-    <h2>IF inputs (order: geometry → binary → language)</h2>
+    <h2>Input functions (Watsonx on-demand → CE fallback)</h2>
+    <div class="sliders">
+      <div><label>M1 explore</label><input id="m1" type="number" step="0.1" value="4.2"></div>
+      <div><label>M2 effic</label><input id="m2" type="number" step="0.01" value="0.55"></div>
+      <div><label>M3 meta</label><input id="m3" type="number" step="0.01" value="0.99"></div>
+      <div><label>V judge</label><input id="v" type="number" step="0.01" value="0.58"></div>
+      <div><label>if7</label><input id="if7" type="number" step="0.01" value="0.5"></div>
+    </div>
+    <h2>Scalars (order: geometry → binary → language)</h2>
     <div class="order">
       <div><label>1. geometry (G)</label><input id="g" type="number" step="0.01" value="0.47"></div>
       <div><label>2. binary (B)</label><input id="b" type="number" step="0.01" value="0.73"></div>
-      <div><label>3. language (text)</label><textarea id="language" placeholder="Natural language context drives of₂ and RL on mismatch..."></textarea></div>
+      <div><label>3. language (text)</label><textarea id="language" placeholder="Natural language context..."></textarea></div>
       <div><label>triangulation</label><input id="tri" type="number" step="0.01" placeholder="auto"></div>
-      <div><label>V (human judge 0-1)</label><input id="v" type="number" step="0.01" value="0.58"></div>
     </div>
-    <button onclick="runForward()">Run of₁ + of₂ forward</button>
+    <button onclick="runForward()">Run M1→M2→M3 → of₁ + of₂</button>
     <button class="secondary" onclick="runJudge()">Judge(V) → Adapt(θ,V)</button>
     <div id="answer">of₁ next_frame (224-d) + of₂ explanation appear here.</div>
     <div id="out"></div>
@@ -52,7 +61,7 @@ button.secondary{background:#1e2937;border:1px solid #334155}
 <script>
 fetch('/info').then(r=>r.json()).then(d=>{
   document.getElementById('meta').textContent =
-    (d.arch||d.mode||'v27') + ' | ' + (d.device||'?') + ' | ckpt:' + (d.ckpt||'?');
+    (d.arch||d.mode||'v27') + ' | ' + (d.device||'?') + ' | if:' + (d.if_backend||'?') + ' | ckpt:' + (d.ckpt||'?');
 });
 const log=document.getElementById('log'); let logPos=0;
 async function pollLog(){
@@ -62,8 +71,7 @@ async function pollLog(){
     if(d.lines&&d.lines.length){
       if(log.textContent.startsWith('connect')) log.textContent='';
       log.textContent+=d.lines.join('\\n')+'\\n';
-      logPos=d.pos; log.parentElement.scrollHeight;
-      log.parentElement.scrollTop=log.parentElement.scrollHeight;
+      logPos=d.pos; log.parentElement.scrollTop=log.parentElement.scrollHeight;
     }
   }catch(e){}
   setTimeout(pollLog,1500);
@@ -72,6 +80,10 @@ pollLog();
 function payload(){
   const tri=document.getElementById('tri').value;
   return {
+    m1:parseFloat(document.getElementById('m1').value),
+    m2:parseFloat(document.getElementById('m2').value),
+    m3:parseFloat(document.getElementById('m3').value),
+    if7:parseFloat(document.getElementById('if7').value),
     geometry:parseFloat(document.getElementById('g').value),
     binary:parseFloat(document.getElementById('b').value),
     language:document.getElementById('language').value,
@@ -85,15 +97,20 @@ function demoChallenge(){
   runForward();
 }
 async function runForward(){
-  document.getElementById('answer').textContent='Running...';
+  document.getElementById('answer').textContent='Running M1→M2→M3...';
   const r=await fetch('/forward',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload())});
   const d=await r.json();
   if(d.error){ document.getElementById('answer').textContent=d.error; return; }
-  document.getElementById('answer').textContent=
-    'τ='+d.tau+' halt='+d.halt+'\\n'+
-    'of₁ scalar='+d.of1_scalar+' (224-d vector in JSON)\\n'+
-    'of₂: '+d.of2_explanation+
-    (d.rl_language_context?'\\nRL: '+d.rl_language_context:'');
+  if(d.halt_source==='m2_sidecar'){
+    document.getElementById('answer').textContent='HALT (M2) C_comp='+d.c_comp+' τ='+d.tau;
+  } else {
+    document.getElementById('answer').textContent=
+      'τ='+d.tau+' halt='+d.halt+'\\n'+
+      'of₁ scalar='+d.of1_scalar+'\\n'+
+      'of₂: '+d.of2_explanation+
+      (d.rl_language_context?'\\nRL: '+d.rl_language_context:'')+
+      (d.sidecars?'\\nbackends: '+JSON.stringify(d.sidecars.backends):'');
+  }
   document.getElementById('out').textContent=JSON.stringify(d,null,2);
 }
 async function runJudge(){

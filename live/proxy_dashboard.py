@@ -77,6 +77,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ckpt_exists": gpu.get("ckpt_exists"),
                 "corpus": gpu.get("corpus"),
                 "doctrine": gpu.get("doctrine"),
+                "if_backend": gpu.get("if_backend"),
                 "log_exists": gpu.get("log_exists"),
             }))
             return

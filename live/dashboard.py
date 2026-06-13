@@ -1,4 +1,4 @@
-"""Golias v27 live dashboard — τ state machine, JSONL corpus training, of₁/of₂ outputs."""
+"""Golias v27 live dashboard — τ state machine, M1/M2/M3 sidecars, of₁/of₂ outputs."""
 import json
 import os
 import subprocess
@@ -13,10 +13,11 @@ import torch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "training"))
 sys.path.insert(0, str(ROOT / "core"))
+sys.path.insert(0, str(ROOT / "sidecars"))
 
 from auth import HEADER, auth_ok  # noqa: E402
 from goliasv7_torch import GoliasV7Torch  # noqa: E402
-from jsonl_corpus_stream import encode_jsonl_record  # noqa: E402
+from if_sidecars import build_if_payload, encode_sidecar_vectors, run_sidecar_pipeline  # noqa: E402
 from ui_page import PAGE  # noqa: E402
 from v27 import compute_tau, language_scalar_from_text, project_outputs  # noqa: E402
 
@@ -24,6 +25,7 @@ PORT = int(os.environ.get("PORT", "8080"))
 BIND = os.environ.get("GOLIAS_BIND", "0.0.0.0")
 CKPT = Path(os.environ.get("GOLIAS_CKPT", ROOT / "goliasv11.pt"))
 LOG = Path(os.environ.get("GOLIAS_LOG", ROOT / "train.jsonl.log"))
+IF_BACKEND = os.environ.get("IF_BACKEND", "watsonx")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 _model = None
@@ -47,21 +49,14 @@ def load_model():
         return _model
 
 
-def _encode_tensors(geometry: float, binary: float, language: str, triangulation: Optional[float]):
-    rec = {
-        "geometry": geometry,
-        "binary": binary,
-        "language": language,
-        "triangulation": triangulation if triangulation is not None else (geometry + binary) / 2,
-        "next_frame": geometry,
-        "next_token": "",
+def _sliders(p: dict) -> dict:
+    return {
+        "m1": float(p.get("m1", 4.2)),
+        "m2": float(p.get("m2", 0.55)),
+        "m3": float(p.get("m3", 0.99)),
+        "v": float(p.get("V", p.get("v", 0.58))),
+        "if7": float(p.get("if7", 0.5)),
     }
-    m1, m2, m3, _, _, _ = encode_jsonl_record(rec)
-    return (
-        torch.from_numpy(m1).unsqueeze(0).to(DEVICE),
-        torch.from_numpy(m2).unsqueeze(0).to(DEVICE),
-        torch.from_numpy(m3).unsqueeze(0).to(DEVICE),
-    )
 
 
 def run_v27_forward(p: dict) -> dict:
@@ -72,18 +67,53 @@ def run_v27_forward(p: dict) -> dict:
     g = float(p.get("geometry", 0.47))
     b = float(p.get("binary", 0.73))
     lang = str(p.get("language", p.get("question", "")))
-    tri = p.get("triangulation")
-    tri_f = float(tri) if tri is not None else None
+    sliders = _sliders(p)
     tau = compute_tau(g, b, language_scalar_from_text(lang))
 
-    model.TAU.data.fill_(tau)
-    m1, m2, m3 = _encode_tensors(g, b, lang, tri_f)
+    if_payload = build_if_payload(
+        g, b, lang, tau,
+        sliders["m1"], sliders["m2"], sliders["m3"],
+        sliders["v"], sliders["if7"],
+    )
 
+    try:
+        sidecars = run_sidecar_pipeline(if_payload)
+    except Exception as ex:
+        return {"error": f"sidecar pipeline failed: {ex}", "ckpt": CKPT.name}
+
+    if sidecars.get("halt"):
+        return {
+            "halt": True,
+            "halt_source": "m2_sidecar",
+            "tau": round(tau, 6),
+            "c_comp": sidecars.get("c_comp_proxy"),
+            "sidecars": sidecars,
+            "ckpt": CKPT.name,
+            "device": DEVICE,
+            "if_backend": IF_BACKEND,
+            "of2_explanation": "HALT — M2 efficiency zealot (C_comp > τ)",
+            "of1_scalar": g,
+        }
+
+    m1t, m2t, m3t = encode_sidecar_vectors(
+        sliders["m1"], sliders["m2"], sliders["m3"],
+        g, b, lang, sliders["v"], sliders["if7"],
+        sidecars["m1"], sidecars["m2"], sidecars["m3"],
+        device=DEVICE,
+    )
+
+    model.TAU.data.fill_(tau)
     with torch.no_grad():
-        out = model(m1, m2, m3)
+        out = model(m1t, m2t, m3t)
 
     v27 = project_outputs(out["pred"], out["decode"], out["comp_score"], tau, g, b, lang)
-    v27["V"] = float(p.get("V", p.get("v", 0.58)))
+    v27["V"] = sliders["v"]
+    v27["m1"] = sliders["m1"]
+    v27["m2"] = sliders["m2"]
+    v27["m3"] = sliders["m3"]
+    v27["if7"] = sliders["if7"]
+    v27["sidecars"] = sidecars
+    v27["if_backend"] = IF_BACKEND
     v27["ckpt"] = CKPT.name
     v27["device"] = DEVICE
     return v27
@@ -97,6 +127,9 @@ def start_jsonl_train():
         env = os.environ.copy()
         env["GOLIAS_RESUME"] = str(CKPT)
         env["GOLIAS_LOG"] = str(LOG)
+        env["GOLIAS_JSONL"] = os.environ.get(
+            "GOLIAS_JSONL", str(ROOT / "data" / "goliasv27_corpus.jsonl")
+        )
         env["GOLIAS_OUTPUT"] = str(ROOT / "goliasv27.pt")
         script = ROOT / "training" / "train_from_jsonl.py"
         _train_proc = subprocess.Popen(
@@ -135,13 +168,16 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", PAGE)
         elif path == "/health":
-            self._send(200, "application/json", json.dumps({"status": "ok", "arch": "v27"}))
+            self._send(200, "application/json", json.dumps({
+                "status": "ok", "arch": "v27", "if_backend": IF_BACKEND,
+            }))
         elif path == "/info":
             self._send(200, "application/json", json.dumps({
                 "arch": "Golias-NextAura-v27",
                 "device": DEVICE,
                 "ckpt": CKPT.name,
                 "ckpt_exists": CKPT.exists(),
+                "if_backend": IF_BACKEND,
                 "corpus": str(ROOT / "data" / "goliasv27_corpus.jsonl"),
                 "doctrine": str(ROOT / "data" / "architecture_doctrine.jsonl"),
                 "ledger": "public — runtime on IBM Cloud",
@@ -178,23 +214,27 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             p = {}
 
-        if path == "/forward":
-            self._send(200, "application/json", json.dumps(run_v27_forward(p)))
-        elif path == "/infer":
+        if path in ("/forward", "/infer"):
             self._send(200, "application/json", json.dumps(run_v27_forward(p)))
         elif path == "/ask":
             r = run_v27_forward(p)
             if "error" in r:
                 self._send(503, "application/json", json.dumps(r))
                 return
-            answer = (
-                f"τ={r['tau']} | of₁ next_frame={r['of1_scalar']}\n"
-                f"of₂: {r['of2_explanation']}\n"
-            )
+            if r.get("halt_source") == "m2_sidecar":
+                answer = f"HALT — M2 sidecar (C_comp={r.get('c_comp')} > τ={r.get('tau')})\n"
+            else:
+                answer = (
+                    f"τ={r['tau']} | of₁ next_frame={r.get('of1_scalar')}\n"
+                    f"of₂: {r.get('of2_explanation', '')}\n"
+                )
             if r.get("rl_language_context"):
                 answer += f"RL: {r['rl_language_context']}\n"
             if r.get("halt"):
                 answer += "HALT — C_comp > τ\n"
+            sc = r.get("sidecars", {})
+            if sc:
+                answer += f"Sidecars: {sc.get('backends', {})}\n"
             self._send(200, "application/json", json.dumps({"answer": answer, "v27": r}))
         elif path == "/train/jsonl":
             ok, msg = start_jsonl_train()
@@ -211,7 +251,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    print(f"v27 dashboard http://{BIND}:{PORT} device={DEVICE} ckpt={CKPT}")
+    print(f"v27 dashboard http://{BIND}:{PORT} device={DEVICE} ckpt={CKPT} if={IF_BACKEND}")
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
 
 
