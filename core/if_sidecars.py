@@ -169,7 +169,21 @@ def _call_if(role: str, payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
             pass
 
     url = FALLBACK_URLS.get(role, "")
-    return _ce_post(url, payload), "ce-fallback"
+    if url:
+        try:
+            return _ce_post(url, payload), "ce-fallback"
+        except SidecarFallbackError:
+            pass
+
+    import sys
+    from pathlib import Path
+
+    sidecars = Path(__file__).resolve().parent.parent / "sidecars"
+    if str(sidecars) not in sys.path:
+        sys.path.insert(0, str(sidecars))
+    from if_rules import rule_response  # noqa: WPS433
+
+    return rule_response(role, payload), "local-fallback"
 
 
 def run_sidecar_pipeline(payload: dict[str, Any]) -> dict[str, Any]:
