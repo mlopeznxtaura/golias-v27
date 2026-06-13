@@ -1,0 +1,96 @@
+"""Code Engine HTTPS front — proxies to GPU v27 backend."""
+import json
+import os
+from http.client import HTTPConnection, HTTPSConnection
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
+
+from auth import proxy_headers
+from ui_page import PAGE
+
+PORT = int(os.environ.get("PORT", "8080"))
+GPU_URL = os.environ.get("GOLIAS_GPU_URL", "http://127.0.0.1:8080").rstrip("/")
+_p = urlparse(GPU_URL)
+GPU_HOST = _p.hostname or "127.0.0.1"
+GPU_PORT = _p.port or (443 if _p.scheme == "https" else 80)
+GPU_SCHEME = _p.scheme or "http"
+
+POST_PATHS = {"/infer", "/ask", "/forward", "/judge", "/train/jsonl"}
+
+
+def _conn():
+    if GPU_SCHEME == "https":
+        return HTTPSConnection(GPU_HOST, GPU_PORT, timeout=300)
+    return HTTPConnection(GPU_HOST, GPU_PORT, timeout=300)
+
+
+def _gpu_request(method, path, body=None):
+    headers = proxy_headers()
+    headers["Accept"] = "*/*"
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        headers["Content-Length"] = str(len(body))
+    c = _conn()
+    try:
+        c.request(method, path, body=body, headers=headers)
+        return c.getresponse()
+    except Exception:
+        c.close()
+        raise
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, ctype, body):
+        self.send_response(code)
+        self.send_header("content-type", ctype)
+        self.send_header("cache-control", "no-store")
+        self.end_headers()
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        self.wfile.write(body)
+
+    def _proxy(self, method, path):
+        try:
+            if method == "GET":
+                resp = _gpu_request("GET", path)
+            else:
+                n = int(self.headers.get("content-length", 0))
+                body = self.rfile.read(n) if n else b"{}"
+                resp = _gpu_request("POST", path, body=body)
+            data = resp.read()
+            self.send_response(resp.status)
+            self.send_header("content-type", resp.getheader("Content-Type", "application/json"))
+            self.end_headers()
+            self.wfile.write(data)
+            resp.close()
+        except Exception as ex:
+            self._send(502, "application/json", json.dumps({"error": str(ex)}))
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
+            self._send(200, "text/html; charset=utf-8", PAGE)
+        elif path in ("/health", "/info", "/log"):
+            q = self.path.split("?", 1)
+            self._proxy("GET", path + (f"?{q[1]}" if len(q) > 1 and path == "/log" else ""))
+        else:
+            self._send(404, "text/plain", "not found")
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        if path in POST_PATHS:
+            self._proxy("POST", path)
+        else:
+            self._send(404, "text/plain", "not found")
+
+
+def main():
+    print(f"v27 CE proxy :{PORT} -> {GPU_URL}", flush=True)
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()

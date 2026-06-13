@@ -1,0 +1,4 @@
+numpy
+torch
+datasets
+huggingface_hub

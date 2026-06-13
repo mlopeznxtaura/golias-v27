@@ -1,0 +1,6 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY live/proxy_dashboard.py live/auth.py live/ui_page.py live/
+ENV PORT=8080
+EXPOSE 8080
+CMD ["python", "/app/live/proxy_dashboard.py"]
