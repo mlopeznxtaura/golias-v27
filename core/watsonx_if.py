@@ -11,10 +11,8 @@ from typing import Any
 
 from if_sidecars import SidecarFallbackError
 
-API_KEY = os.environ.get("WATSONX_API_KEY", "")
-PROJECT_ID = os.environ.get("WATSONX_PROJECT_ID", "")
-BASE_URL = os.environ.get("WATSONX_URL", "https://us-south.ml.cloud.ibm.com").rstrip("/")
-MODEL_ID = os.environ.get("WATSONX_MODEL", "ibm/granite-3-8b-instruct")
+def _env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default)
 
 _TOKEN: str | None = None
 
@@ -37,12 +35,12 @@ def _get_token() -> str:
     global _TOKEN
     if _TOKEN:
         return _TOKEN
-    if not API_KEY:
+    if not _env("WATSONX_API_KEY"):
         raise SidecarFallbackError("WATSONX_API_KEY not set")
     url = "https://iam.cloud.ibm.com/identity/token"
     data = urllib.parse.urlencode({
         "grant_type": "urn:ibm:params:oauth:grant-type:apikey",
-        "apikey": API_KEY,
+        "apikey": _env("WATSONX_API_KEY"),
     }).encode()
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
@@ -55,13 +53,16 @@ def _get_token() -> str:
 
 
 def _generate(system: str, user: str, temperature: float, max_tokens: int, timeout: float) -> str:
-    if not PROJECT_ID:
+    project_id = _env("WATSONX_PROJECT_ID")
+    if not project_id:
         raise SidecarFallbackError("WATSONX_PROJECT_ID not set")
     token = _get_token()
-    url = f"{BASE_URL}/ml/v1/text/generation?version=2023-05-29"
+    base_url = _env("WATSONX_URL", "https://us-south.ml.cloud.ibm.com").rstrip("/")
+    model_id = _env("WATSONX_MODEL", "ibm/granite-3-8b-instruct")
+    url = f"{base_url}/ml/v1/text/generation?version=2023-05-29"
     body = json.dumps({
-        "model_id": MODEL_ID,
-        "project_id": PROJECT_ID,
+        "model_id": model_id,
+        "project_id": project_id,
         "input": f"<|system|>\n{system}\n<|user|>\n{user}\n<|assistant|>\n",
         "parameters": {
             "decoding_method": "greedy" if temperature < 0.2 else "sample",
@@ -78,9 +79,12 @@ def _generate(system: str, user: str, temperature: float, max_tokens: int, timeo
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as ex:
-        if ex.code in (429, 500, 502, 503, 504):
-            raise SidecarFallbackError(f"watsonx http {ex.code}") from ex
-        raise SidecarFallbackError(f"watsonx http {ex.code}") from ex
+        detail = ""
+        try:
+            detail = ex.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            pass
+        raise SidecarFallbackError(f"watsonx http {ex.code}: {detail}") from ex
     except (urllib.error.URLError, TimeoutError) as ex:
         raise SidecarFallbackError(str(ex)) from ex
 
@@ -138,12 +142,11 @@ def call_m2(payload: dict[str, Any]) -> dict[str, Any]:
     c_comp = float(parsed.get("c_comp_proxy", max(0, (m1 / 10.0) - m2)))
     halt = bool(parsed.get("halt", c_comp > tau))
     efficiency = float(parsed.get("efficiency", m2))
-    if m1 > 3.5 and m2 < 0.6 and c_comp <= tau:
-        c_comp = tau + 0.05
-        halt = True
+    halt_reason = "c_comp_gt_tau" if halt and c_comp > tau else ("model_halt" if halt else None)
     return {
         "efficiency": efficiency,
         "halt": halt,
+        "halt_reason": halt_reason,
         "c_comp_proxy": round(c_comp, 4),
         "raw": raw[:200],
     }

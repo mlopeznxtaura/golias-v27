@@ -1,0 +1,23 @@
+[Unit]
+Description=Golias v27 dashboard (IBM GPU runtime)
+After=network.target
+Wants=golias-secrets.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/golias-v27/live
+# Non-secret config + IBM SM secrets (never commit tokens to git)
+EnvironmentFile=-/opt/golias/config.env
+EnvironmentFile=-/run/golias/secrets.env
+EnvironmentFile=-/opt/golias/env.sh
+Environment=GOLIAS_CKPT=/opt/golias-v27/goliasv28.pt
+Environment=GOLIAS_JSONL=/opt/golias-v27/data/goliasv27_corpus.jsonl
+Environment=GOLIAS_LOG=/opt/golias-v27/train_hybrid.log
+ExecStartPre=/opt/golias/load_secrets_from_sm.sh
+ExecStart=/opt/golias/.venv/bin/python /opt/golias-v27/live/dashboard.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

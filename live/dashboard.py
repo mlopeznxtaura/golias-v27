@@ -15,37 +15,56 @@ sys.path.insert(0, str(ROOT / "training"))
 sys.path.insert(0, str(ROOT / "core"))
 sys.path.insert(0, str(ROOT / "sidecars"))
 
+try:
+    from secrets_loader import ensure_secrets
+    ensure_secrets()
+except ImportError:
+    pass
+
 from auth import HEADER, auth_ok  # noqa: E402
+from checkpoint_registry import list_checkpoints, read_hf_offset, resolve_active_ckpt  # noqa: E402
 from goliasv7_torch import GoliasV7Torch  # noqa: E402
 from if_sidecars import build_if_payload, encode_sidecar_vectors, run_sidecar_pipeline  # noqa: E402
 from ui_page import PAGE  # noqa: E402
+from frame_renderer import render_frame_outputs  # noqa: E402
 from v27 import compute_tau, language_scalar_from_text, project_outputs  # noqa: E402
+
+try:
+    from intake_upload import ingest_bytes
+except ImportError:
+    ingest_bytes = None  # type: ignore
 
 PORT = int(os.environ.get("PORT", "8080"))
 BIND = os.environ.get("GOLIAS_BIND", "0.0.0.0")
-CKPT = Path(os.environ.get("GOLIAS_CKPT", ROOT / "goliasv11.pt"))
+
+
+def active_ckpt() -> Path:
+    """Always resolve freshest checkpoint (pointer → newest file → env)."""
+    return resolve_active_ckpt(ROOT)
 LOG = Path(os.environ.get("GOLIAS_LOG", ROOT / "train.jsonl.log"))
 IF_BACKEND = os.environ.get("IF_BACKEND", "watsonx")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 _model = None
 _ckpt_mtime = 0.0
+_ckpt_path: Optional[Path] = None
 _train_proc = None
 _lock = threading.Lock()
 
 
 def load_model():
-    global _model, _ckpt_mtime
+    global _model, _ckpt_mtime, _ckpt_path
+    ckpt = active_ckpt()
     with _lock:
-        if not CKPT.exists():
+        if not ckpt.exists():
             return None
-        mtime = CKPT.stat().st_mtime
-        if _model is not None and mtime == _ckpt_mtime:
+        mtime = ckpt.stat().st_mtime
+        if _model is not None and mtime == _ckpt_mtime and _ckpt_path == ckpt.resolve():
             return _model
         m = GoliasV7Torch().to(DEVICE)
-        m.load_checkpoint(str(CKPT))
+        m.load_checkpoint(str(ckpt))
         m.eval()
-        _model, _ckpt_mtime = m, mtime
+        _model, _ckpt_mtime, _ckpt_path = m, mtime, ckpt.resolve()
         return _model
 
 
@@ -59,10 +78,19 @@ def _sliders(p: dict) -> dict:
     }
 
 
+def _halt_explanation(sidecars: dict, tau: float) -> str:
+    c_comp = float(sidecars.get("c_comp_proxy", 0))
+    reason = sidecars.get("halt_reason") or (sidecars.get("m2") or {}).get("halt_reason")
+    if reason == "c_comp_gt_tau" or c_comp > tau:
+        return f"HALT — C_comp={c_comp} > τ={tau:.4f}"
+    return "HALT — M2 efficiency zealot"
+
+
 def run_v27_forward(p: dict) -> dict:
+    ckpt = active_ckpt()
     model = load_model()
     if model is None:
-        return {"error": "checkpoint not found", "ckpt": str(CKPT)}
+        return {"error": "checkpoint not found", "ckpt": str(ckpt)}
 
     g = float(p.get("geometry", 0.47))
     b = float(p.get("binary", 0.73))
@@ -79,7 +107,7 @@ def run_v27_forward(p: dict) -> dict:
     try:
         sidecars = run_sidecar_pipeline(if_payload)
     except Exception as ex:
-        return {"error": f"sidecar pipeline failed: {ex}", "ckpt": CKPT.name}
+        return {"error": f"sidecar pipeline failed: {ex}", "ckpt": ckpt.name}
 
     if sidecars.get("halt"):
         return {
@@ -88,10 +116,10 @@ def run_v27_forward(p: dict) -> dict:
             "tau": round(tau, 6),
             "c_comp": sidecars.get("c_comp_proxy"),
             "sidecars": sidecars,
-            "ckpt": CKPT.name,
+            "ckpt": ckpt.name,
             "device": DEVICE,
             "if_backend": IF_BACKEND,
-            "of2_explanation": "HALT — M2 efficiency zealot (C_comp > τ)",
+            "of2_explanation": _halt_explanation(sidecars, tau),
             "of1_scalar": g,
         }
 
@@ -106,7 +134,12 @@ def run_v27_forward(p: dict) -> dict:
     with torch.no_grad():
         out = model(m1t, m2t, m3t)
 
-    v27 = project_outputs(out["pred"], out["decode"], out["comp_score"], tau, g, b, lang)
+    v27 = project_outputs(
+        out["pred"], out["decode"], out["comp_score"], tau, g, b, lang,
+        m1_exploration=str(sidecars.get("m1", {}).get("exploration", "")),
+    )
+    frames = render_frame_outputs(g, b, lang, v27.get("of1_next_frame", []))
+    v27.update(frames)
     v27["V"] = sliders["v"]
     v27["m1"] = sliders["m1"]
     v27["m2"] = sliders["m2"]
@@ -114,7 +147,7 @@ def run_v27_forward(p: dict) -> dict:
     v27["if7"] = sliders["if7"]
     v27["sidecars"] = sidecars
     v27["if_backend"] = IF_BACKEND
-    v27["ckpt"] = CKPT.name
+    v27["ckpt"] = ckpt.name
     v27["device"] = DEVICE
     return v27
 
@@ -124,14 +157,20 @@ def start_jsonl_train():
     with _lock:
         if _train_proc and _train_proc.poll() is None:
             return False, "training already running"
+        resume = active_ckpt()
         env = os.environ.copy()
-        env["GOLIAS_RESUME"] = str(CKPT)
+        env["GOLIAS_RESUME"] = str(resume)
+        env.pop("GOLIAS_OUTPUT", None)
+        env.pop("GOLIAS_CKPT", None)  # train uses latest pointer, not stale env
         env["GOLIAS_LOG"] = str(LOG)
         env["GOLIAS_JSONL"] = os.environ.get(
             "GOLIAS_JSONL", str(ROOT / "data" / "goliasv27_corpus.jsonl")
         )
-        env["GOLIAS_OUTPUT"] = str(ROOT / "goliasv27.pt")
-        script = ROOT / "training" / "train_from_jsonl.py"
+        env["GOLIAS_TRAIN_MODE"] = os.environ.get("GOLIAS_TRAIN_MODE", "hybrid")
+        env["GOLIAS_HF_SAMPLES"] = os.environ.get("GOLIAS_HF_SAMPLES", "50000")
+        env["GOLIAS_HF_OFFSET"] = os.environ.get("GOLIAS_HF_OFFSET", "0")
+        env["GOLIAS_JSONL_EPOCHS"] = os.environ.get("GOLIAS_JSONL_EPOCHS", "3")
+        script = ROOT / "training" / "train_hybrid.py"
         _train_proc = subprocess.Popen(
             [sys.executable, str(script)],
             cwd=str(ROOT),
@@ -172,16 +211,24 @@ class Handler(BaseHTTPRequestHandler):
                 "status": "ok", "arch": "v27", "if_backend": IF_BACKEND,
             }))
         elif path == "/info":
+            ckpt = active_ckpt()
+            all_ckpts = list_checkpoints(ROOT)
             self._send(200, "application/json", json.dumps({
                 "arch": "Golias-NextAura-v27",
                 "device": DEVICE,
-                "ckpt": CKPT.name,
-                "ckpt_exists": CKPT.exists(),
+                "ckpt": ckpt.name,
+                "ckpt_path": str(ckpt),
+                "ckpt_exists": ckpt.exists(),
+                "latest_pointer": str(ROOT / "checkpoints" / "latest.txt"),
+                "checkpoints": [str(p) for p in all_ckpts[:8]],
+                "hf_stream_offset": read_hf_offset(ROOT, 70000),
                 "if_backend": IF_BACKEND,
                 "corpus": str(ROOT / "data" / "goliasv27_corpus.jsonl"),
+                "drop_corpus": str(ROOT / "data" / "drop_corpus.jsonl"),
                 "doctrine": str(ROOT / "data" / "architecture_doctrine.jsonl"),
                 "ledger": "public — runtime on IBM Cloud",
                 "log": str(LOG),
+                "gh_publish": os.environ.get("GOLIAS_GH_PUBLISH", "1"),
             }))
         elif path == "/log":
             from urllib.parse import parse_qs, urlparse
@@ -222,11 +269,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(503, "application/json", json.dumps(r))
                 return
             if r.get("halt_source") == "m2_sidecar":
-                answer = f"HALT — M2 sidecar (C_comp={r.get('c_comp')} > τ={r.get('tau')})\n"
+                answer = f"{r.get('of2_explanation', 'HALT — M2 sidecar')}\n"
             else:
+                nf = r.get("next_frame_scalar", r.get("of1_scalar"))
+                lang = r.get("of2_language") or r.get("of2_explanation", "")
+                aligned = r.get("outputs_aligned")
                 answer = (
-                    f"τ={r['tau']} | of₁ next_frame={r.get('of1_scalar')}\n"
-                    f"of₂: {r.get('of2_explanation', '')}\n"
+                    f"ALIGNMENT: {r.get('alignment_explanation', aligned)}\n\n"
+                    f"NEXT FRAME (of₁) scalar={nf}\n"
+                    f"  current_frame_image: {'yes' if r.get('current_frame_image') else 'no'}\n"
+                    f"  next_frame_image: {'yes' if r.get('next_frame_image') else 'no'}\n"
+                    f"  clip: {'yes' if r.get('next_frame_video') or r.get('frame_sequence') else 'no'}\n\n"
+                    f"LANGUAGE (of₂)\n  {lang}\n"
+                )
+                answer += (
+                    f"\nτ={r['tau']} | halt={r.get('halt')}\n"
+                    f"of₂ full: {r.get('of2_explanation', '')}\n"
                 )
             if r.get("rl_language_context"):
                 answer += f"RL: {r['rl_language_context']}\n"
@@ -235,11 +293,31 @@ class Handler(BaseHTTPRequestHandler):
             sc = r.get("sidecars", {})
             if sc:
                 answer += f"Sidecars: {sc.get('backends', {})}\n"
+                if sc.get("errors"):
+                    answer += f"Sidecar errors: {sc.get('errors')}\n"
             self._send(200, "application/json", json.dumps({"answer": answer, "v27": r}))
         elif path == "/train/jsonl":
             ok, msg = start_jsonl_train()
             code = 200 if ok else 409
             self._send(code, "application/json", json.dumps({"ok": ok, "message": msg}))
+        elif path == "/upload/dataset":
+            if ingest_bytes is None:
+                self._send(500, "application/json", json.dumps({"error": "intake_upload unavailable"}))
+                return
+            filename = self.headers.get("X-Filename", "upload.json")
+            raw = self.rfile.read(n) if n else b""
+            auto_train = self.headers.get("X-Auto-Train", "").lower() in ("1", "true", "yes")
+            try:
+                result = ingest_bytes(raw, filename, root=ROOT, merge_master=True)
+            except Exception as ex:
+                self._send(400, "application/json", json.dumps({"error": str(ex)}))
+                return
+            train_msg = ""
+            if auto_train:
+                ok, train_msg = start_jsonl_train()
+                result["train_started"] = ok
+                result["train_message"] = train_msg
+            self._send(200, "application/json", json.dumps(result))
         elif path == "/judge":
             r = run_v27_forward(p)
             v = float(p.get("V", 0.5))
@@ -251,7 +329,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    print(f"v27 dashboard http://{BIND}:{PORT} device={DEVICE} ckpt={CKPT} if={IF_BACKEND}")
+    print(f"v27 dashboard http://{BIND}:{PORT} device={DEVICE} ckpt={active_ckpt()} if={IF_BACKEND}")
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
 
 

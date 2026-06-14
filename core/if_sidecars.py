@@ -146,8 +146,9 @@ def _ce_post(url: str, payload: dict[str, Any], timeout: float = 10.0) -> dict[s
         raise SidecarFallbackError(str(ex)) from ex
 
 
-def _call_if(role: str, payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    """Try Watsonx then CE fallback. Returns (result, backend)."""
+def _call_if(role: str, payload: dict[str, Any]) -> tuple[dict[str, Any], str, Optional[str]]:
+    """Try Watsonx then CE fallback. Returns (result, backend, error)."""
+    last_err: Optional[str] = None
     if IF_BACKEND == "local":
         import sys
         from pathlib import Path
@@ -157,23 +158,24 @@ def _call_if(role: str, payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
             sys.path.insert(0, str(sidecars))
         from if_rules import rule_response  # noqa: WPS433
 
-        return rule_response(role, payload), "local"
+        return rule_response(role, payload), "local", None
 
     if IF_BACKEND == "watsonx":
         from watsonx_if import call_m1, call_m2, call_m3  # noqa: WPS433
 
         callers = {"m1": call_m1, "m2": call_m2, "m3": call_m3}
         try:
-            return callers[role](payload), "watsonx"
-        except SidecarFallbackError:
-            pass
+            return callers[role](payload), "watsonx", None
+        except SidecarFallbackError as ex:
+            last_err = str(ex)
 
     url = FALLBACK_URLS.get(role, "")
     if url:
         try:
-            return _ce_post(url, payload), "ce-fallback"
-        except SidecarFallbackError:
-            pass
+            return _ce_post(url, payload), "ce-fallback", last_err
+        except SidecarFallbackError as ex:
+            last_err = str(ex)
+
 
     import sys
     from pathlib import Path
@@ -183,25 +185,34 @@ def _call_if(role: str, payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
         sys.path.insert(0, str(sidecars))
     from if_rules import rule_response  # noqa: WPS433
 
-    return rule_response(role, payload), "local-fallback"
+    return rule_response(role, payload), "local-fallback", last_err
 
 
 def run_sidecar_pipeline(payload: dict[str, Any]) -> dict[str, Any]:
     """M1 → M2 → M3 on-demand; returns sidecar outputs + backends."""
     backends: dict[str, str] = {}
-    m1_out, backends["m1"] = _call_if("m1", payload)
+    errors: dict[str, str] = {}
+    m1_out, backends["m1"], err = _call_if("m1", payload)
+    if err:
+        errors["m1"] = err
 
     p2 = {**payload, "prior": {**payload.get("prior", {}), "m1_out": m1_out}}
-    m2_out, backends["m2"] = _call_if("m2", p2)
+    m2_out, backends["m2"], err = _call_if("m2", p2)
+    if err:
+        errors["m2"] = err
 
     p3 = {**p2, "prior": {**p2["prior"], "m2_out": m2_out}}
-    m3_out, backends["m3"] = _call_if("m3", p3)
+    m3_out, backends["m3"], err = _call_if("m3", p3)
+    if err:
+        errors["m3"] = err
 
     return {
         "m1": m1_out,
         "m2": m2_out,
         "m3": m3_out,
         "backends": backends,
+        "errors": errors,
         "halt": bool(m2_out.get("halt", False)),
+        "halt_reason": m2_out.get("halt_reason"),
         "c_comp_proxy": float(m2_out.get("c_comp_proxy", 0)),
     }

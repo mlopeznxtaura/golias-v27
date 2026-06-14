@@ -15,7 +15,10 @@ GPU_HOST = _p.hostname or "127.0.0.1"
 GPU_PORT = _p.port or (443 if _p.scheme == "https" else 80)
 GPU_SCHEME = _p.scheme or "http"
 
-POST_PATHS = frozenset({"/infer", "/ask", "/forward", "/judge", "/train/jsonl"})
+POST_PATHS = frozenset({"/infer", "/ask", "/forward", "/judge", "/train/jsonl", "/upload/dataset"})
+PROXY_HEADER_NAMES = frozenset({
+    "content-type", "x-filename", "x-auto-train", "x-golias-key",
+})
 
 
 def _conn():
@@ -24,11 +27,16 @@ def _conn():
     return HTTPConnection(GPU_HOST, GPU_PORT, timeout=120)
 
 
-def _gpu_request(method, path, body=None):
+def _gpu_request(method, path, body=None, extra_headers=None):
     headers = proxy_headers()
     headers["Accept"] = "*/*"
+    if extra_headers:
+        for k, v in extra_headers.items():
+            if k.lower() in PROXY_HEADER_NAMES and v:
+                headers[k] = v
     if body is not None:
-        headers["Content-Type"] = "application/json"
+        if "Content-Type" not in headers and "content-type" not in {k.lower() for k in headers}:
+            headers["Content-Type"] = "application/json"
         headers["Content-Length"] = str(len(body))
     c = _conn()
     try:
@@ -73,12 +81,17 @@ class Handler(BaseHTTPRequestHandler):
                 "gateway": "code-engine-https",
                 "gpu_backend": GPU_URL,
                 "device": gpu.get("device"),
-                "ckpt": gpu.get("ckpt"),
+                "ckpt": gpu.get("ckpt") or gpu.get("ckpt_path"),
+                "ckpt_path": gpu.get("ckpt_path"),
                 "ckpt_exists": gpu.get("ckpt_exists"),
+                "checkpoints": gpu.get("checkpoints"),
+                "hf_stream_offset": gpu.get("hf_stream_offset"),
                 "corpus": gpu.get("corpus"),
+                "drop_corpus": gpu.get("drop_corpus"),
                 "doctrine": gpu.get("doctrine"),
                 "if_backend": gpu.get("if_backend"),
-                "log_exists": gpu.get("log_exists"),
+                "log": gpu.get("log"),
+                "gh_publish": gpu.get("gh_publish"),
             }))
             return
         if path == "/log":
@@ -105,8 +118,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         n = int(self.headers.get("content-length", 0))
         body = self.rfile.read(n) if n else None
+        extra = {k: v for k, v in self.headers.items() if k.lower() in PROXY_HEADER_NAMES}
         try:
-            resp = _gpu_request("POST", path, body=body)
+            resp = _gpu_request("POST", path, body=body, extra_headers=extra)
             data = resp.read()
             self.send_response(resp.status)
             ct = resp.getheader("Content-Type", "application/json")

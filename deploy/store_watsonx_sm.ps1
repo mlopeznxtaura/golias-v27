@@ -5,7 +5,7 @@
 # Optional project id (skip auto-detect):
 #   $env:WATSONX_PROJECT_ID = '<project id>'
 param(
-    [string]$SmUrl = "https://77a74a8e-30d4-440a-b4da-7eb56ff43425.us-south.secrets-manager.appdomain.cloud",
+    [string]$SmUrl = $(if ($env:IBM_SECRETS_MANAGER_URL) { $env:IBM_SECRETS_MANAGER_URL } else { throw "Set IBM_SECRETS_MANAGER_URL" }),
     [string]$ApiKeySecretName = "watsonx-api-key-golias",
     [string]$ProjectSecretName = "watsonx-project-id-golias"
 )

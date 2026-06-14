@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from normalize_jsonl import normalize_record
 
+from hf_stream import physicalai_to_record
+
 PHYSICALAI = "nvidia/PhysicalAI-WorldModel-Synthetic-Physical-Interaction-Scenes"
 
 
@@ -34,24 +36,7 @@ def _geometry_from_pose(pose_world2cam: list) -> float:
 
 
 def physicalai_sample_to_record(sample: dict[str, Any], prev_geometry: Optional[float] = None) -> dict:
-    j = sample.get("json") or sample
-    cam = j["camera"]
-    pose = cam["pose_world2cam"]
-    g = _geometry_from_pose(pose)
-    fc = float(j.get("frame_count", 1))
-    b = float(min(1.0, (fc % 100) / 100.0 + 0.25 * (1 if fc > 30 else 0)))
-    lang = str(j.get("camera_name") or sample.get("__key__", "scene"))
-    tri = float((g + b + _hash_scalar(lang)) / 3)
-    nf = g + 0.05 * (g - (prev_geometry if prev_geometry is not None else g))
-    nf = float(max(0.0, min(1.0, nf)))
-    return normalize_record({
-        "geometry": round(g, 4),
-        "binary": round(b, 4),
-        "language": lang,
-        "triangulation": round(tri, 4),
-        "next_frame": round(nf, 4),
-        "next_token": f"frame_{int(fc)}",
-    })
+    return physicalai_to_record(sample, prev_geometry=prev_geometry)
 
 
 def text_label_sample_to_record(sample: dict[str, Any], text_field: str, label_field: str) -> dict:

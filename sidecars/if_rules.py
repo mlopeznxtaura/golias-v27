@@ -21,10 +21,12 @@ def rule_response(role: str, payload: dict[str, Any]) -> dict[str, Any]:
 
     if role == "m2":
         c_comp = max(0.0, (m1 / 10.0) - m2)
-        halt = c_comp > tau or (m1 > 3.5 and m2 < 0.6)
+        halt = c_comp > tau
+        halt_reason = "c_comp_gt_tau" if halt else None
         return {
             "efficiency": m2,
             "halt": halt,
+            "halt_reason": halt_reason,
             "c_comp_proxy": round(c_comp, 4),
         }
 

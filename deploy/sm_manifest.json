@@ -1,0 +1,20 @@
+{
+  "comment": "Secret NAMES only — values live in IBM Secrets Manager. Set IBM_SECRETS_MANAGER_URL in config.env.",
+  "secret_group": "default",
+  "secrets": [
+    {"sm_name": "ibm-cloud-api-key-golias", "env": "IBM_CLOUD_API_KEY"},
+    {"sm_name": "watsonx-api-key-golias", "env": "WATSONX_API_KEY"},
+    {"sm_name": "watsonx-project-id-golias", "env": "WATSONX_PROJECT_ID"},
+    {"sm_name": "github-token-golias", "env": "GH_TOKEN"},
+    {"sm_name": "github-org-golias", "env": "GOLIAS_GH_ORG"},
+    {"sm_name": "hf-token-golias", "env": "HF_TOKEN"},
+    {"sm_name": "golias-internal-key", "env": "GOLIAS_INTERNAL_KEY"}
+  ],
+  "config": {
+    "IF_BACKEND": "watsonx",
+    "WATSONX_URL": "https://us-south.ml.cloud.ibm.com",
+    "WATSONX_MODEL": "ibm/granite-3-8b-instruct",
+    "GOLIAS_GH_VISIBILITY": "public",
+    "GOLIAS_GH_PUBLISH": "1"
+  }
+}

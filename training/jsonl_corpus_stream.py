@@ -10,14 +10,18 @@ import hashlib
 import json
 import math
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Union
 
 import numpy as np
 import torch
 
-D_M1, D_M2_RAW, D_M2, D_M3 = 96, 24, 152, 352
-D_OUT = 512
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "core"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from dimensions import D_M1, D_M2_RAW, D_M2, D_M3, D_PRED as D_OUT
 
 
 def _hash_text(text: str, dim: int) -> np.ndarray:

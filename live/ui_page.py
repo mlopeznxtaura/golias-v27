@@ -19,9 +19,24 @@ input,textarea{width:100%;background:#0f1625;border:1px solid #243150;color:#e2e
 textarea{min-height:88px;resize:vertical;font-family:inherit}
 button{background:linear-gradient(135deg,#3f7bff,#7a47ff);border:0;color:#fff;font-weight:600;padding:10px 16px;border-radius:6px;cursor:pointer;width:100%;margin-top:8px}
 button.secondary{background:#1e2937;border:1px solid #334155}
-#answer,#out{background:#0a1628;border:1px solid #1e3a5f;border-radius:6px;padding:10px;font-size:11px;min-height:90px;margin-top:8px;white-space:pre-wrap;color:#bae6fd}
+#answer,#out,.outbox{background:#0a1628;border:1px solid #1e3a5f;border-radius:6px;padding:10px;font-size:11px;min-height:70px;margin-top:8px;white-space:pre-wrap;color:#bae6fd}
+#nextFrame{border-color:#1e4d3a}
+#languageOut{border-color:#3b2f6b}
+#alignment{border-color:#854d0e}
+#alignment.aligned{border-color:#166534;background:#0a1f14;color:#86efac}
+#alignment.misaligned{border-color:#7f1d1d;background:#1f0a0a;color:#fca5a5}
+.visRow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.visRow img,.visRow video{width:100%;border-radius:6px;border:1px solid #1f2937;background:#000}
+.clip{margin-top:8px}
+.clip video,.clip img{max-width:100%;border-radius:6px;border:1px solid #334155}
 .order{display:grid;grid-template-columns:1fr;gap:8px}
-.sliders{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:10px}
+.dropZone{border:2px dashed #dc2626;border-radius:8px;padding:16px;text-align:center;background:#1a0a0a;color:#fca5a5;margin:10px 0;cursor:pointer;transition:border-color .2s,background .2s}
+.dropZone.hover{border-color:#f87171;background:#2a1010}
+.dropZone p{margin:4px 0;font-size:11px}
+.dropZone .hint{font-size:9px;color:#94a3b8}
+#dropStatus{font-size:10px;color:#86efac;margin-top:6px;min-height:14px}
+.trainRow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.trainRow label{font-size:9px;display:flex;align-items:center;gap:4px;color:#94a3b8}
 @media(max-width:700px){.sliders{grid-template-columns:1fr 1fr}}
 </style></head>
 <body>
@@ -33,7 +48,18 @@ button.secondary{background:#1e2937;border:1px solid #334155}
   <section>
     <h2>Corpus replay log</h2>
     <div class="term"><div id="log">connecting...</div></div>
-    <button class="secondary" onclick="startTrain()">Start JSONL corpus train (v11→v27)</button>
+    <h2>Dataset drop — continuous retrain intake</h2>
+    <div id="dropZone" class="dropZone">
+      <p>Drop JSON / JSONL here</p>
+      <p class="hint">L2 modular arrays, normalized JSONL, or doctrine rows</p>
+      <input type="file" id="fileInput" accept=".json,.jsonl,application/json" style="display:none" />
+    </div>
+    <div id="dropStatus"></div>
+    <div class="trainRow">
+      <label><input type="checkbox" id="autoTrain" checked /> Auto-start hybrid train after upload</label>
+      <button class="secondary" onclick="document.getElementById('fileInput').click()">Browse file</button>
+    </div>
+    <button class="secondary" onclick="startTrain()">Start hybrid train (JSONL + HF)</button>
     <button class="secondary" onclick="demoChallenge()">Demo: move the red block left</button>
   </section>
   <section>
@@ -54,15 +80,54 @@ button.secondary{background:#1e2937;border:1px solid #334155}
     </div>
     <button onclick="runForward()">Run M1→M2→M3 → of₁ + of₂</button>
     <button class="secondary" onclick="runJudge()">Judge(V) → Adapt(θ,V)</button>
-    <div id="answer">of₁ next_frame (224-d) + of₂ explanation appear here.</div>
+    <div id="alignment" class="outbox">Alignment: waiting...</div>
+    <h2>Next frame (of₁) — image + short clip</h2>
+    <div class="visRow">
+      <div><label>current</label><img id="imgCurrent" alt="current frame" /></div>
+      <div><label>predicted next</label><img id="imgNext" alt="next frame" /></div>
+    </div>
+    <div class="clip"><label>preview clip</label><div id="clipHost">—</div></div>
+    <h2>Language (of₂)</h2>
+    <div id="languageOut" class="outbox">Language output: waiting...</div>
+    <div id="answer">Summary</div>
     <div id="out"></div>
   </section>
 </div>
 <script>
 fetch('/info').then(r=>r.json()).then(d=>{
   document.getElementById('meta').textContent =
-    (d.arch||d.mode||'v27') + ' | ' + (d.device||'?') + ' | if:' + (d.if_backend||'?') + ' | ckpt:' + (d.ckpt||'?');
+    (d.arch||d.mode||'v27') + ' | ' + (d.device||'?') + ' | if:' + (d.if_backend||'?') +
+    ' | ckpt:' + (d.ckpt||'?') + ' | hf@' + (d.hf_stream_offset||'?');
 });
+const dropZone=document.getElementById('dropZone');
+const fileInput=document.getElementById('fileInput');
+const dropStatus=document.getElementById('dropStatus');
+function uploadFile(file){
+  if(!file) return;
+  dropStatus.textContent='Uploading '+file.name+'...';
+  const reader=new FileReader();
+  reader.onload=async ()=>{
+    try{
+      const auto=document.getElementById('autoTrain').checked;
+      const r=await fetch('/upload/dataset',{
+        method:'POST',
+        headers:{'Content-Type':'application/octet-stream','X-Filename':file.name,'X-Auto-Train':auto?'1':'0'},
+        body:reader.result
+      });
+      const d=await r.json();
+      if(d.error){ dropStatus.textContent='Error: '+d.error; return; }
+      dropStatus.textContent='Added '+d.records_added+' rows → corpus '+(d.master_corpus_lines||'?')+' lines'+
+        (d.train_started?' | training started':'');
+      log.textContent+='\\n[drop] '+JSON.stringify(d)+'\\n';
+    }catch(e){ dropStatus.textContent='Upload failed: '+e; }
+  };
+  reader.readAsArrayBuffer(file);
+}
+dropZone.addEventListener('click',()=>fileInput.click());
+fileInput.addEventListener('change',e=>uploadFile(e.target.files[0]));
+['dragenter','dragover'].forEach(ev=>dropZone.addEventListener(ev,e=>{e.preventDefault();dropZone.classList.add('hover');}));
+['dragleave','drop'].forEach(ev=>dropZone.addEventListener(ev,e=>{e.preventDefault();dropZone.classList.remove('hover');}));
+dropZone.addEventListener('drop',e=>uploadFile(e.dataTransfer.files[0]));
 const log=document.getElementById('log'); let logPos=0;
 async function pollLog(){
   try{
@@ -98,19 +163,54 @@ function demoChallenge(){
 }
 async function runForward(){
   document.getElementById('answer').textContent='Running M1→M2→M3...';
+  document.getElementById('alignment').textContent='Alignment: computing...';
+  document.getElementById('languageOut').textContent='Language (of₂): computing...';
+  document.getElementById('imgCurrent').removeAttribute('src');
+  document.getElementById('imgNext').removeAttribute('src');
+  document.getElementById('clipHost').textContent='—';
   const r=await fetch('/forward',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload())});
   const d=await r.json();
-  if(d.error){ document.getElementById('answer').textContent=d.error; return; }
-  if(d.halt_source==='m2_sidecar'){
-    document.getElementById('answer').textContent='HALT (M2) C_comp='+d.c_comp+' τ='+d.tau;
-  } else {
-    document.getElementById('answer').textContent=
-      'τ='+d.tau+' halt='+d.halt+'\\n'+
-      'of₁ scalar='+d.of1_scalar+'\\n'+
-      'of₂: '+d.of2_explanation+
-      (d.rl_language_context?'\\nRL: '+d.rl_language_context:'')+
-      (d.sidecars?'\\nbackends: '+JSON.stringify(d.sidecars.backends):'');
+  if(d.error){
+    document.getElementById('answer').textContent=d.error;
+    document.getElementById('alignment').textContent='Alignment: error';
+    return;
   }
+  if(d.halt_source==='m2_sidecar'){
+    document.getElementById('alignment').textContent='HALT — M2 sidecar (no visual forward)';
+    document.getElementById('languageOut').textContent='Language halted by M2';
+    document.getElementById('answer').textContent='HALT C_comp='+d.c_comp+' τ='+d.tau;
+    return;
+  }
+  const alignEl=document.getElementById('alignment');
+  const aligned=!!d.outputs_aligned;
+  alignEl.className='outbox '+(aligned?'aligned':'misaligned');
+  alignEl.textContent=(d.alignment_explanation||('aligned='+aligned+' score='+(d.alignment_score||'?')));
+  if(d.current_frame_image) document.getElementById('imgCurrent').src=d.current_frame_image;
+  if(d.next_frame_image) document.getElementById('imgNext').src=d.next_frame_image;
+  const clip=document.getElementById('clipHost');
+  clip.innerHTML='';
+  if(d.next_frame_video){
+    const v=document.createElement('video');
+    v.src=d.next_frame_video; v.autoplay=true; v.loop=true; v.muted=true; v.playsInline=true;
+    clip.appendChild(v);
+  } else if(d.frame_sequence&&d.frame_sequence.length){
+    const img=document.createElement('img');
+    let i=0; img.src=d.frame_sequence[0];
+    setInterval(()=>{ i=(i+1)%d.frame_sequence.length; img.src=d.frame_sequence[i]; }, 120);
+    clip.appendChild(img);
+  } else {
+    clip.textContent='(no clip — install Pillow on GPU for GIF)';
+  }
+  const langOut=d.of2_language||d.of2_explanation||'';
+  document.getElementById('languageOut').textContent=
+    'Input: '+(document.getElementById('language').value||'(empty)')+'\\n\\n'+
+    'Output: '+langOut+'\\n\\n'+
+    (d.of2_decode_tokens?'Decode: '+d.of2_decode_tokens+'\\n':'')+
+    (d.rl_language_context?'RL: '+d.rl_language_context:'');
+  document.getElementById('answer').textContent=
+    'τ='+d.tau+' | next_frame_scalar='+(d.next_frame_scalar??d.of1_scalar)+
+    ' | mismatch='+d.mismatch+
+    (d.sidecars?'\\nbackends: '+JSON.stringify(d.sidecars.backends):'');
   document.getElementById('out').textContent=JSON.stringify(d,null,2);
 }
 async function runJudge(){
