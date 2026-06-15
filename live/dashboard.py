@@ -28,6 +28,7 @@ from if_sidecars import build_if_payload, encode_sidecar_vectors, run_sidecar_pi
 from ui_page import PAGE  # noqa: E402
 from frame_renderer import render_frame_outputs  # noqa: E402
 from v27 import compute_tau, language_scalar_from_text, project_outputs  # noqa: E402
+from language_record import resolve_language_input  # noqa: E402
 
 try:
     from intake_upload import ingest_bytes
@@ -92,10 +93,17 @@ def run_v27_forward(p: dict) -> dict:
     if model is None:
         return {"error": "checkpoint not found", "ckpt": str(ckpt)}
 
-    g = float(p.get("geometry", 0.47))
-    b = float(p.get("binary", 0.73))
-    lang = str(p.get("language", p.get("question", "")))
-    sliders = _sliders(p)
+    resolved = resolve_language_input(p)
+    g = float(resolved["geometry"])
+    b = float(resolved["binary"])
+    lang = str(resolved["language"])
+    sliders = {
+        "m1": float(resolved["m1"]),
+        "m2": float(resolved["m2"]),
+        "m3": float(resolved["m3"]),
+        "v": float(resolved["V"]),
+        "if7": float(resolved["if7"]),
+    }
     tau = compute_tau(g, b, language_scalar_from_text(lang))
 
     if_payload = build_if_payload(
@@ -149,6 +157,9 @@ def run_v27_forward(p: dict) -> dict:
     v27["if_backend"] = IF_BACKEND
     v27["ckpt"] = ckpt.name
     v27["device"] = DEVICE
+    v27["input_record"] = resolved
+    v27["geometry"] = g
+    v27["binary"] = b
     return v27
 
 
